@@ -22,6 +22,21 @@ void gpu_knn_finprotax_f32(cudaStream_t stream, void** buffers, const char* opaq
 void gpu_knn_v2_f32(cudaStream_t stream, void** buffers, const char* opaque,
                     std::size_t opaque_len);
 
+void gpu_knn_mean_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                      std::size_t opaque_len);
+
+void gpu_knn_max_mean_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                      std::size_t opaque_len);
+
+void gpu_knn_finprotax_warp_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    std::size_t opaque_len);
+
+void gpu_knn_q97_gap_warp_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    std::size_t opaque_len);
+
+void gpu_knn_q97_weighted_gap_warp_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    std::size_t opaque_len);
+
 }  // namespace knn
 
 #endif

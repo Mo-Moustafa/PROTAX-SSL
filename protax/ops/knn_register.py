@@ -2,15 +2,29 @@
 # This file defines the interface between JAX and the
 # custom KNN functions that are implemented in C++/CUDA.
 # =======================================================
-__all__ = ["knn, knn_v2"]
+__all__ = ["knn", "knn_v2"]
 
-from jax.lib import xla_client
+try:
+    from jax.lib import xla_client
+except ImportError:
+    # jax>=0.9 no longer re-exports xla_client from jax.lib
+    try:
+        from jax._src.lib import xla_client
+    except ImportError:
+        from jaxlib import xla_client
+
+import jax
 from jax import core
 from jax.core import ShapedArray
+from jax.extend import core as jax_extend_core
 from jax.interpreters import xla, mlir, batching
-from jaxlib.hlo_helpers import (
-    custom_call,
-)  # NOTE: change to mhlo_helpers in older versions of JAX
+
+try:
+    from jaxlib.hlo_helpers import custom_call
+except ImportError:
+    # jax/jaxlib>=0.9 moved helper under jax internals
+    from jax._src.interpreters.mlir import custom_call
+
 from functools import partial
 
 import numpy as np
@@ -43,7 +57,12 @@ def default_layouts(*shapes):
 
 def knn(indptr, indices, matdat, N):
     """
-    Return row-wise k nearest neighbors for a sparse CSR matrix
+    Row-wise KNN for a sparse CSR matrix (k=2).
+
+    For each row, returns shape (N, 2):
+    - N is the number of unique nodes in the taxonomy tree
+    - result[i, 0] = minimum value in row i
+    - result[i, 1] = (2nd minimum - minimum) in row i (gap).
     """
 
     res = jnp.zeros((N, 2))
@@ -97,7 +116,7 @@ def _knn_lowering(ctx, indptr, indices, matdat, res, platform="cpu"):
         # create opaque descriptor for problem size
         opaque = gpu_ops.build_knn_descriptor(N)
         out = custom_call(
-            b"gpu_knn_f32",  # call target name
+            b"gpu_knn_finprotax_warp_f32",
             result_types=[res_type],
             operands=[indptr, indices, matdat],
             operand_layouts=default_layouts(
@@ -167,12 +186,11 @@ def _knn_v2_lowering(ctx, indptr, indices, matdat, res):
         opaque = gpu_ops.build_knn_descriptor(N)
 
         out = custom_call(
-            b"gpu_knn_v2_f32",  # call target name
+            b"gpu_knn_q97_weighted_gap_warp_f32",
+            # b"gpu_knn_q97_gap_warp_f32",
             result_types=[res_type],
             operands=[indptr, indices, matdat],
-            operand_layouts=default_layouts(
-                ip_type.shape, idx_type.shape, md_type.shape
-            ),
+            operand_layouts=default_layouts(ip_type.shape, idx_type.shape, md_type.shape),
             result_layouts=default_layouts(res_type.shape),  # memory layout
             backend_config=opaque,  # opaque descriptor
         ).results
@@ -185,16 +203,31 @@ def _knn_v2_lowering(ctx, indptr, indices, matdat, res):
 # =======================================================
 #             Registering KNN Primitive
 # =======================================================
+Primitive = getattr(core, "Primitive", jax_extend_core.Primitive)
+
+def _register_custom_call_target(name, value, platform):
+    """
+    Compatibility wrapper for JAX custom call registration.
+    JAX >= 0.6 removed xla_client.register_custom_call_target.
+    """
+    if hasattr(xla_client, "register_custom_call_target"):
+        xla_client.register_custom_call_target(name, value, platform=platform)
+        return
+
+    # Legacy custom_call() ABI uses API version 0 under the new FFI registrar.
+    jax.ffi.register_ffi_target(name, value, platform=platform, api_version=0)
+
+
 # register CPU XLA custom calls
 for _name, _value in cpu_ops.registrations().items():
-    xla_client.register_custom_call_target(_name, _value, platform="cpu")
+    _register_custom_call_target(_name, _value, platform="cpu")
 
 # register GPU XLA custom calls
 if is_gpu_available:
     for _name, _value in gpu_ops.registrations().items():
-        xla_client.register_custom_call_target(_name, _value, platform="gpu")
+        _register_custom_call_target(_name, _value, platform="gpu")
 # defining KNN primitive for JAX
-_knn_prim = core.Primitive("knn")
+_knn_prim = Primitive("knn")
 _knn_prim.def_impl(partial(xla.apply_primitive, _knn_prim))
 _knn_prim.def_abstract_eval(_knn_abstract_eval)
 
@@ -210,10 +243,11 @@ mlir.register_lowering(
 
 if is_gpu_available:
     # defining KNN v2 primitive
-    _knn_v2_prim = core.Primitive("knn_v2")
+    _knn_v2_prim = Primitive("knn_v2")
     _knn_v2_prim.def_impl(partial(xla.apply_primitive, _knn_v2_prim))
     _knn_v2_prim.def_abstract_eval(_knn_v2_abstract_eval)
     mlir.register_lowering(_knn_v2_prim, _knn_v2_lowering, platform="gpu")
+
 
 
 # testing on a simple example
@@ -221,12 +255,22 @@ if is_gpu_available:
 if __name__ == "__main__":
     foo = jnp.array(
         [
-            [0.012, 0.3, 0.2],
-            [0.01, 0, 0.3],
-            [0.4, 0.1, 0.5],
+            [0.012, 0.3, 0.2, 0.1],
+            [0.1, -0.01, 0.3, 0.2],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, -0.1],
+            [0.0, 0.0, 0.0, 0.3],
+            [0.2, 0.3, 0.2, 0.01],
         ],
         dtype=jnp.float32,
     )
 
     foo = sparse.bcsr_fromdense(foo)
-    x = knn(foo.indptr, foo.indices, foo.data, 3)
+    data = foo.data
+
+    # data = data.at[1].set(-0.0) # negative 0s are not skipped.
+    
+    x = knn(foo.indptr, foo.indices, data, 6)
+    x_2 = knn_v2(foo.indptr, foo.indices, data, 6)
+    print("x are:\n", x, "\n\n")
+    print("x_2 are:\n ", x_2, "\n\n")

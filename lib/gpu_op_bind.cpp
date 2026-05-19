@@ -9,6 +9,11 @@ pybind11::dict Registrations() {
   pybind11::dict dict;
   dict["gpu_knn_f32"] = xla_helpers::EncapsulateFunction(knn::gpu_knn_f32);
   dict["gpu_knn_v2_f32"] = xla_helpers::EncapsulateFunction(knn::gpu_knn_v2_f32);
+  dict["gpu_knn_mean_f32"] = xla_helpers::EncapsulateFunction(knn::gpu_knn_mean_f32);                      // This is the min and mean version
+  dict["gpu_knn_max_mean_f32"] = xla_helpers::EncapsulateFunction(knn::gpu_knn_max_mean_f32);               // This is the max and mean version
+  dict["gpu_knn_finprotax_warp_f32"] = xla_helpers::EncapsulateFunction(knn::gpu_knn_finprotax_warp_f32);   // This is the enhanced min and gap version
+  dict["gpu_knn_q97_gap_warp_f32"] = xla_helpers::EncapsulateFunction(knn::gpu_knn_q97_gap_warp_f32);       // min and (min - q97), skipping negatives
+  dict["gpu_knn_q97_weighted_gap_warp_f32"] = xla_helpers::EncapsulateFunction(knn::gpu_knn_q97_weighted_gap_warp_f32);  // weighted gap using small-index quantile
   return dict;
 }
 

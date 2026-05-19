@@ -1,7 +1,10 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-
+import textwrap
+from protax import protax_utils
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
 
 def validate_lengths(predictions_list, labels_list):
     if len(predictions_list) != len(labels_list):
@@ -9,22 +12,36 @@ def validate_lengths(predictions_list, labels_list):
                          f" Got {len(predictions_list)} and {len(labels_list)}.")
 
 
-def get_species_predictions(predictions_path):
+def get_categories(tree):
+    node_state = np.asarray(tree.node_state)
+    col1 = node_state[:, 0]
+    col2 = node_state[:, 1]
+
+    conditions = [
+        (col1 == True)  & (col2 == False), # Missing
+        (col1 == False) & (col2 == True),  # Known
+        (col1 == False) & (col2 == False)  # Unknown
+    ]
+    choices = ["missing", "known", "unknown"]
+    categories = np.select(conditions, choices, default="known")
+    categories = np.append(categories, "none")
+
+    return categories
+
+def get_predictions(predictions_path, class_level):
+    
     modelResults_df = pd.read_csv(predictions_path)
-    predictions_list = modelResults_df["7"].tolist()
-    probs_list = modelResults_df["final_prob"].tolist()
+    modelResults_df[f"{class_level}_prob"] = modelResults_df[f"{class_level}_prob"].fillna(0.0)
+    predictions_list = modelResults_df[f"{class_level}_id"].tolist()
+    probs_list = modelResults_df[f"{class_level}_prob"].tolist()
 
     return predictions_list, probs_list
 
 
-def read_labels(labels_path):
-    with open(labels_path, 'r') as f:
-        labels_list = [int(line.strip()) for line in f]
 
-    return labels_list
-
-
-def plot_cumulative(list_of_results, accuracies, model_id):
+def plot_cumulative(list_of_results, accuracies, config, exp_details, class_level, id, test_mode):
+    wrapper = textwrap.TextWrapper(width=70)
+    config = "\n".join(wrapper.wrap(text=config))
 
     plt.figure(figsize=(8, 6))
     plt.plot([0, 100], [0, 100],  label="Ideal Calibration", color='gray')
@@ -41,6 +58,7 @@ def plot_cumulative(list_of_results, accuracies, model_id):
 
       n = len(sorted_correct)
       cumulative_probs =  cumulative_probs / n * 100  # Normalize to percentage
+      # cumulative_probs = (cumulative_probs / cumulative_probs[-1]) * 100
       cumulative_correct = cumulative_correct / n * 100  # Normalize to percentage
 
       # Plot cumulative probability vs. cumulative correct
@@ -51,46 +69,84 @@ def plot_cumulative(list_of_results, accuracies, model_id):
 
     plt.xlabel("Cumulative Probability")
     plt.ylabel("Cumulative Correct")
-    plt.title(f"PROTAX-GPU {model_id}\n Accuracy={np.mean(accuracies)}%")
+    plt.title(f"{config}\n {exp_details}\n {class_level} accuracy={np.mean(accuracies)}%")
     plt.legend()
     plt.grid(True)
-    plt.savefig(f"{model_id}_Calibration.png")
+    plt.tight_layout()
+    plt.savefig(f"{id}_{test_mode}_{class_level}.png")
     plt.close()
 
     return
 
+def get_confusion_matrix(pred_cats, label_cats, class_level, id):
+  categories = ["known", "missing", "unknown"]
+  cm = confusion_matrix(label_cats, pred_cats, labels=categories)
+  # plt.figure(figsize=(8, 6))
+  # sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+  #             xticklabels=categories, yticklabels=categories)
+  
+  # plt.ylabel('Actual Category')
+  # plt.xlabel('Predicted Category')
+  # plt.title(f'Confusion Matrix: {class_level}')
+  
+  # plt.tight_layout()
+  # plt.savefig(f"{id}_{class_level}_cm.png")
+  # plt.close()
+  
+  print("Rows = Actual, Columns = Predicted\n")
 
-def calculate_correctness(predictions_list, probs_list, labels_list):
+  print(categories)
+  print(cm)
 
-  correctness_labels = []
+def calculate_correctness(predictions_list, probs_list, labels_list, node_categories, class_level, id):
+  preds = np.asarray(predictions_list)
+  probs = np.asarray(probs_list)
+  labels = np.asarray(labels_list)
 
-  for i in range(len(predictions_list)):
-    if predictions_list[i] == labels_list[i]:
-      correctness_labels.append(1)
+  valid_mask = labels != -1
+  preds_valid = preds[valid_mask]
+  labels_valid = labels[valid_mask]
+  probs_valid = probs[valid_mask]
 
-    else:
-      correctness_labels.append(0)
+  correctness = (preds_valid == labels_valid).astype(int)
+  results = {
+          "probs": probs_valid,
+          "correctness": correctness
+  }
 
-  results = {}
-  results["probs"] = np.array(probs_list)
-  results["correctness"] = np.array(correctness_labels)
+  accuracy = float(correctness.mean() * 100)
 
-  # Calculate final accuracy
-  accuracy = (correctness_labels.count(1) / len(predictions_list)) * 100
+  # Calculate category accuracies on aligned arrays only
+  pred_cats = node_categories[preds_valid]
+  label_cats = node_categories[labels_valid]
+  # category_accuracies = {}
+  # for cat in ["known", "missing", "unknown"]:
+  #     mask = (label_cats == cat)
+  #     if np.any(mask):
+  #         category_accuracies[cat] = np.mean(correctness[mask]) * 100
+  #     else:
+  #         category_accuracies[cat] = np.nan
+
+  # get_confusion_matrix(pred_cats, label_cats, class_level, id)   # Creating Confusion Matrix
+
   print(f"Accuracy: {accuracy:.2f}%")
+  # print("Category accuracies: \n", category_accuracies)
 
   return results, accuracy
 
 
-def evaluate(predictions_path, labels_path, model_id):
+def evaluate(predictions_path, labels_path, train_config, exp_details, class_level, tax_dir, id):
+  predictions_list, probs_list = get_predictions(predictions_path, class_level)  
+  labels_df = pd.read_csv(labels_path)
+  
+  test_mode = str(labels_path).split("/")[-1].split("_")[0]
+  labels_list = labels_df[f"{class_level}_id"].tolist()
+  validate_lengths(predictions_list, labels_list)
 
-    predictions_list, probs_list = get_species_predictions(predictions_path)  
-    labels_list = read_labels(labels_path)
-    validate_lengths(predictions_list, labels_list)
+  tree, _, _, _ = protax_utils.read_model_jax("models/scalings/plain.npz", tax_dir)
+  node_categories = get_categories(tree)
 
-    results, accuracy = calculate_correctness(predictions_list, probs_list, labels_list)
+  results, accuracy = calculate_correctness(predictions_list, probs_list, labels_list, node_categories, class_level, id)
+  plot_cumulative([results], [accuracy], train_config, exp_details, class_level, id, test_mode)
 
-    plot_cumulative([results], [accuracy], model_id)
-
-    return
-
+  return

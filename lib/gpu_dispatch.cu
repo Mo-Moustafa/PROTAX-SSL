@@ -30,7 +30,26 @@ void dispatch_min_k(K kern, cudaStream_t stream, void** buffers, const char* opa
 }
 
 // --------------------------------------------------
+template <typename T, typename K>
+void dispatch_min_k_warp(K kern, cudaStream_t stream, void** buffers,
+                         const char* opaque, size_t opaque_len) {
+    const KNNDescriptor &d =
+        *xla_helpers::UnpackDescriptor<KNNDescriptor>(opaque, opaque_len);
+    const int N = d.rows;
 
+    const int *indptr = reinterpret_cast<const int *>(buffers[0]);
+    const int *indices = reinterpret_cast<const int *>(buffers[1]);
+    T *data   = reinterpret_cast<T *>(buffers[2]);
+    T *result = reinterpret_cast<T *>(buffers[3]);
+
+    const int warps_per_block = THREADS_PER_BLOCK / 32;   // e.g. 64 / 32 = 2
+    const int num_warps = N;                              // 1 warp per row
+    const int grid = (num_warps + warps_per_block - 1) / warps_per_block;
+
+    kern<<<grid, THREADS_PER_BLOCK, 0, stream>>>(N, indptr, indices, data, result);
+}
+
+// --------------------------------------------------
 template <typename T, typename K>
 void dispatch_min_k_v2(K kern, cudaStream_t stream, void** buffers, const char* opaque,
                     size_t opaque_len) {
@@ -60,6 +79,33 @@ void gpu_knn_f32(cudaStream_t stream, void** buffers, const char* opaque,
     // handled by template deduction
     dispatch_min_k<float>(knn_gpu::min_k_finprotax_fp32, stream, buffers, opaque, opaque_len);
 }
+
+void gpu_knn_mean_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    size_t opaque_len) {
+    dispatch_min_k<float>(knn_gpu::min_k_mean_fp32, stream, buffers, opaque, opaque_len);
+}
+
+void gpu_knn_max_mean_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    size_t opaque_len) {
+    dispatch_min_k<float>(knn_gpu::max_k_mean_fp32, stream, buffers, opaque, opaque_len);
+}
+
+void gpu_knn_finprotax_warp_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    size_t opaque_len) {
+    dispatch_min_k_warp<float>(knn_gpu::min_k_finprotax_warp_fp32, stream, buffers, opaque, opaque_len);
+}
+
+void gpu_knn_q97_gap_warp_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    size_t opaque_len) {
+    dispatch_min_k_warp<float>(knn_gpu::min_q97_gap_warp_fp32, stream, buffers, opaque, opaque_len);
+}
+
+void gpu_knn_q97_weighted_gap_warp_f32(cudaStream_t stream, void** buffers, const char* opaque,
+                    size_t opaque_len) {
+    dispatch_min_k_warp<float>(knn_gpu::min_q97_weighted_gap_warp_fp32, stream, buffers, opaque, opaque_len);
+}
+
+// -------------------------------------------------- Above are the used functions
 
 void gpu_knn_finprotax_f32(cudaStream_t stream, void** buffers, const char* opaque,
                     size_t opaque_len) {
