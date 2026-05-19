@@ -141,5 +141,7 @@ To reproduce experiments, PROTAX-SSL requires an NVIDIA GPU with at least 16GB V
 
 # Datasets
 The MycoAI dataset is available [here](https://github.com/MycoAI/MycoAI).
-The CanadianInvertebrates dataset through the Bioscan package [here](https://github.com/bioscan-ml/dataset).
+
+The CanadianInvertebrates dataset is available through the Bioscan package [here](https://github.com/bioscan-ml/dataset).
+
 The smaller FinPROTAX dataset is available [here](https://github.com/psomervuo/FinPROTAX).
