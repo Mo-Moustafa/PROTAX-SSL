@@ -1,12 +1,14 @@
 # PROTAX-SSL
 
+![alt text](img/PROTAX-SSL.png?raw=true)
+
 A hybrid framework integrating self-supervised DNA barcode encoders with probabilistic taxonomic inference for uncertainty-aware and taxonomically consistent classification, including open-set recognition and unknown taxa detection.
 
 The framework is built upon [PROTAX-GPU](https://github.com/uoguelph-mlrg/PROTAX-GPU), and utilizes [BarcodeBERT](https://github.com/bioscan-ml/barcodebert) and [BarcodeMamba](https://github.com/bioscan-ml/BarcodeMamba) as self-supervised DNA barcode encoders.
 
-## PROTAX-GPU
+### PROTAX-GPU
 
-![alt text](img/Block_diagram_upd.png?raw=true)
+![alt text](img/PROTAX-GPU.png?raw=true)
 
 A GPU-accelerated JAX-based implementation of [PROTAX](https://pubmed.ncbi.nlm.nih.gov/27296980/).
 
