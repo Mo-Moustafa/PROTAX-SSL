@@ -1,45 +1,30 @@
-# PROTAX-GPU
+# PROTAX-SSL
+
+A hybrid framework integrating self-supervised DNA barcode encoders with probabilistic taxonomic inference for uncertainty-aware and taxonomically consistent classification, including open-set recognition and unknown taxa detection.
+
+The framework is built upon [PROTAX-GPU](https://github.com/uoguelph-mlrg/PROTAX-GPU), and utilizes [BarcodeBERT](https://github.com/bioscan-ml/barcodebert) and [BarcodeMamba](https://github.com/bioscan-ml/BarcodeMamba) as self-supervised DNA barcode encoders.
+
+## PROTAX-GPU
 
 ![alt text](img/Block_diagram_upd.png?raw=true)
 
-A GPU-accelerated JAX-based implementation of [PROTAX](https://pubmed.ncbi.nlm.nih.gov/27296980/). Contains all code and experiments for PROTAX-GPU
+A GPU-accelerated JAX-based implementation of [PROTAX](https://pubmed.ncbi.nlm.nih.gov/27296980/).
 
-To reproduce the BOLD 7.8M dataset experiments, PROTAX-GPU requires a NVIDIA GPU with at least 8GB VRAM and CUDA compute capability 6.0 or later. This corresponds to GPUs in the NVIDIA Pascal, NVIDIA Volta™, NVIDIA Turing™, NVIDIA Ampere architecture, and NVIDIA Hopper™ architecture families.
-
-### Contents:
-
-[Functionality](https://github.com/uoguelph-mlrg/PROTAX-GPU#Functionality)<br>
-[Features](https://github.com/uoguelph-mlrg/PROTAX-GPU#Features)<br>
-[Organization](https://github.com/uoguelph-mlrg/PROTAX-GPU#Organization)<br>
-[Compatibility](https://github.com/uoguelph-mlrg/PROTAX-GPU#Compatibility)<br>
-[Installation](https://github.com/uoguelph-mlrg/PROTAX-GPU#Installation)<br>
-[Usage](https://github.com/uoguelph-mlrg/PROTAX-GPU#Usage)
-- [Inference](https://github.com/uoguelph-mlrg/PROTAX-GPU#Inference)
-- [Training](https://github.com/uoguelph-mlrg/PROTAX-GPU#Training)
 
 # Functionality
-Estimates the probability of each outcome in a taxonomic tree given a query barcode sequence compared to reference sequences.
+Taxonomic placement of DNA barcode queries across all taxonomic ranks, accompanied with uncertainity estimates of predictions at each level.
 
-- Uses JAX to accelerate sequence distance and probability decomposition calculations
-- Uses custom CUDA kernels to accelerate the calculation of the top-k most similar reference sequences
+- Uses Foundation Models to create DNA barcode Embeddings.
+- Creates a taxonomy tree from a given dataset.
+- Uses JAX to accelerate sequence distance and probability decomposition calculations.
+- Uses custom CUDA kernels to accelerate the calculation of the top-k most similar reference sequences/
 
 **Features:**
 - CPU and GPU inference
-- Gradient-based optimization of model parameters
-- Compatible with TSV and PROTAX input format 
-- Full computation of all probabilities in the taxonomic tree
+- SGD-based optimization of model parameters
+- Compatible with TSV, Fasta and CSV input formats.
+- Full evaluation of models performance in terms of accuracy and calibration.
 
-**Organization:**
-```
-experiments/        All experiments for the paper
-lib/                C++/CUDA code for PROTAX-GPU
-scripts/            Scripts for training and inference
-├-- train.py        Trains a model with gradient descent 
-└-- convert.py      Converts .TSV to PROTAX-GPU format
-tests/              Unit tests 
-protax/             Main PROTAX-GPU code   
-├-- ops/            JAX bindings for CUDA kernels
-```
 
 # Compatibility:
 
@@ -56,14 +41,14 @@ These instructions are for Linux and MacOS. Windows support is experimental.
 
 ## 1. Set up CUDA (required for GPU support)
 
-**IMPORTANT:** PROTAX-GPU requires a full local installation of CUDA, including development headers and tools, due to its use of custom CUDA kernels.
+**IMPORTANT:** PROTAX-SSL requires a full local installation of CUDA, including development headers and tools, due to its use of custom CUDA kernels.
 
 - Install CUDA >= 12 from the [NVIDIA CUDA Toolkit website](https://developer.nvidia.com/cuda-downloads)
 - Install cuDNN >= 8.9 following the [official cuDNN installation guide](https://docs.nvidia.com/deeplearning/cudnn/install-guide/index.html)
 
 Ensure that your system environment variables are correctly set up to point to your CUDA installation.
 
-**NOTE:** While JAX offers an easier CUDA installation via pip wheels for some platforms, this method does not provide the full CUDA toolkit required by PROTAX-GPU. You must perform a local CUDA installation as described above.
+**NOTE:** While JAX offers an easier CUDA installation via pip wheels for some platforms, this method does not provide the full CUDA toolkit required by . You must perform a local CUDA installation as described above.
 
 ## 2. Create & activate new environment (recommended)
 
@@ -84,14 +69,9 @@ conda activate [name]
 
 **NOTE:** The GPU installation command assumes you have already installed CUDA 12.2 as per step 1.
 
-## 4. Install PROTAX-GPU
+## 4. Install PROTAX-SSL
 
-Clone this repository:
-```
-git clone https://github.com/uoguelph-mlrg/PROTAX-GPU.git
-cd PROTAX-GPU
-```
-Build and install PROTAX-GPU:
+Clone this repository, then build and install PROTAX-SSL:
 
 ```
 pip install .
@@ -109,7 +89,7 @@ chmod +x ./scripts/fix_librhash.sh
 
 
 # Usage
-Instructions for running PROTAX-GPU for inference and training.
+Instructions for running PROTAX-SSL for inference and training.
 
 ## Inference
 Once you have a trained model, you can use the classify_file function to classify query sequences.
@@ -147,20 +127,17 @@ Command Line Arguments
 Training Configuration
 The script uses the following training parameters:
 
-- Learning rate: `0.001`
-- Batch size: `500`
-- Number of epochs: `30`
+- Learning rate: `5e-1`
+- Batch size: `2046`
+- Number of epochs: `10`
 These parameters are predefined in the script and can be modified if needed by editing the dictionary `tc` in the code.
 
 The script uses `models/params/model.npz` as baseline and saves the trained model at `models/params/m2.npz`
 
 # Hardware
-To reproduce the BOLD dataset experiments, PROTAX-GPU requires an NVIDIA GPU with at least 16GB VRAM and CUDA compute capability 6.0 or later. This corresponds to GPUs in the NVIDIA Pascal, NVIDIA Volta™, NVIDIA Turing™, NVIDIA Ampere architecture, and NVIDIA Hopper™ architecture families.
+To reproduce experiments, PROTAX-SSL requires an NVIDIA GPU with at least 16GB VRAM and CUDA compute capability 6.0 or later. This corresponds to GPUs in the NVIDIA Pascal, NVIDIA Volta™, NVIDIA Turing™, NVIDIA Ampere architecture, and NVIDIA Hopper™ architecture families.
 
 # Datasets
-The BOLD 7.8M dataset is available [here](https://www.boldsystems.org/index.php/datarelease). The dataset is not included in this repository due to its size.
-
-The smaller FinPROTAX dataset is included in the `models` directory, sourced from [here](https://github.com/psomervuo/FinPROTAX).
-
-# License
-This project is licensed under the [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) License - see the [LICENSE](LICENSE) file for details.
+The MycoAI dataset is available [here](https://github.com/MycoAI/MycoAI).
+The CanadianInvertebrates dataset through the Bioscan package [here](https://github.com/bioscan-ml/dataset).
+The smaller FinPROTAX dataset is available [here](https://github.com/psomervuo/FinPROTAX).
