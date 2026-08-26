@@ -67,7 +67,7 @@ def create_design_matrices(variant, base_dir, q_dir, tree, dist_scaling, N, para
         pt_min = None
         pt_gap = None
 
-    if variant in ("bert", "mamba", "hybrid_lin", "mlp"):
+    if variant in ("bert", "mamba", "hybrid_lin"):
         print("Reading Embeddings...")
         base_embeddings = np.load(base_dir)
         q_embeddings = np.load(q_dir)
@@ -119,7 +119,7 @@ def create_design_matrices(variant, base_dir, q_dir, tree, dist_scaling, N, para
             dists = model.cosine_dist(q_embeddings[i], base_embeddings)
             X = model.get_X(dists, tree, N, params.sc_mean, params.sc_var, dist_scaling, pt_min, pt_gap)
 
-        elif variant in ("hybrid_lin", "mlp"):
+        elif variant in ("hybrid_lin"):
             dists_bert = model.cosine_dist(bert_q[i], bert_base)
             dists_mamba = model.cosine_dist(mamba_q[i], mamba_base)
             X = model.get_hybrid_X(dists_bert, dists_mamba, tree, N, params.sc_mean, params.sc_var, dist_scaling, pt_min, pt_gap)
@@ -144,24 +144,25 @@ def classify_file(variant, q_dir, base_dir, par_dir, tax_dir, dist_scaling, run_
     """
     Process a batch of queries given a model and taxonomy directory
     """
+    start_time = time.time()
 
-    tree, params, N, segnum = protax_utils.read_model_jax(par_dir, tax_dir)
+    tree, N, segnum = protax_utils.read_tree(tax_dir)
+    tree_for_bprob = tree
+    cls_chunk = 256
+
+    params = protax_utils.read_model(par_dir, tree.ranks)
 
     if X_all is None:
         X_all, Q = create_design_matrices(variant, base_dir, q_dir, tree, dist_scaling, N, params, train_eval, loo_map)
     else:
         Q = X_all.shape[0]
 
-    start_time = time.time()
 
-    tree_for_bprob = tree
-    cls_chunk = 256
     vmapped_bprob = jax.jit(jax.vmap(lambda x: model.fill_bprob(x, params.beta, tree_for_bprob, segnum)))
-
     res = []
     final_probs = []
 
-    for start in tqdm(range(0, Q, cls_chunk),desc="Classifying queries",file=sys.stderr,dynamic_ncols=True,mininterval=5):
+    for start in tqdm(range(0, Q, cls_chunk),desc="Classifying queries",file=sys.stderr,dynamic_ncols=True,mininterval=1000):
         end = min(start + cls_chunk, Q)
         X_batch = jnp.asarray(X_all[start:end], dtype=jnp.float32)
         probs_batch = vmapped_bprob(X_batch)
@@ -175,6 +176,18 @@ def classify_file(variant, q_dir, base_dir, par_dir, tax_dir, dist_scaling, run_
     cumulative_probs = np.array(final_probs)
     cumulative_probs = np.cumprod(cumulative_probs, axis=1)
 
+    # For parallel classification (unknown)    
+    # for i in tqdm(range(Q),desc="Classifying queries",file=sys.stderr,dynamic_ncols=True,mininterval=1000):
+    #     bprobs = model.fill_bprob(X_all[i], params.beta, tree_for_bprob, segnum)        
+    #     filled_paths = jnp.take(bprobs, tree.paths, fill_value=1)
+    #     probs = jnp.prod(filled_paths, axis=1)
+    #     probs = jnp.take(probs, tree.paths, fill_value=-1)
+        
+    #     res.append(jnp.argmax(probs, axis=0))
+    #     final_probs.append(jnp.max(probs, axis=0))
+    # cumulative_probs = np.array(final_probs)
+
+
     # saving results
     rank_names = ['root', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
     node_cols = [f"{r}_id" for r in rank_names]
@@ -187,7 +200,7 @@ def classify_file(variant, q_dir, base_dir, par_dir, tax_dir, dist_scaling, run_
         final_df.to_csv(f"results_{run_id}.csv", index=False)
     else:
         final_df.to_csv(f"results_{run_id}_test.csv", index=False)
-    
+
     end_time = time.time()
     tot_time = end_time - start_time
     print(f"finished in {(tot_time) / 60} minutes")

@@ -182,130 +182,70 @@ def assign_params(beta, sc, lvl):
     return np.take(beta, lvl, axis=0), np.take(sc, lvl, axis=0)
 
 
-def convert_model(model_dir, savedir="models/params"):
+def read_model(model_dir, tree_ranks):
     """
-    Read and convert model files stored in model_dir, convert and save them to npz
+    Read parameters from text file
     """
-    mdir = Path(model_dir)
-    savedir = Path(savedir)
+    print("reading parameters")
+    model_dir = Path(model_dir)
+    parameters = np.load(model_dir.resolve())
 
-    # reading model info
-    beta = read_params(mdir.joinpath("model.pars"))
-    scalings = read_scalings(mdir.joinpath("model.scs"))
+    beta_conc = parameters['beta']
+    scalings_conc = parameters['scalings']
 
-    print("model converted, saving...")
-    model_file = savedir.joinpath("model.npz")
+    # Applying beta mismatch fix to old trained models (should be removed eventually)
+    if beta_conc.shape[0] == 7:
+        print("Padding beta to (8, 4)...")
+        zero_row = np.zeros((1, 4)) # Use zeros, not ones
+        beta_conc = np.vstack([zero_row, beta_conc])   
+    if scalings_conc.shape[0] == 7:
+        print("Padding scalings to (8, 4)...")
+        padding_row = np.array([[0, 1, 0, 1]])
+        scalings_conc = np.vstack([padding_row, scalings_conc])
 
-    i = 1
-    while model_file.exists():
-        model_file = savedir.joinpath(f"model_{i}.npz")
-        i += 1
+    beta, scalings = assign_params(beta_conc, scalings_conc, tree_ranks)
+
+    # Allows to load scalings automatically from single or hybrid models
+    if scalings.shape[1] > 4:
+        sc_mean = jnp.array(scalings[:, [0, 2, 4, 6]])
+        sc_var = jnp.array(scalings[:, [1, 3, 5, 7]])
+    else:
+        sc_mean = jnp.array(scalings[:, [0, 2]])
+        sc_var = jnp.array(scalings[:, [1, 3]])
     
-    np.savez_compressed(
-        model_file.resolve(),
-        beta=beta,
-        scalings=scalings,
+    parameters = ProtaxModel(
+        beta=jnp.array(beta),
+        beta_conc=jnp.array(beta_conc),
+        sc_conc=jnp.array(scalings_conc),
+        sc_mean=sc_mean,
+        sc_var=sc_var
     )
 
-    print(f"saved model at {model_file.resolve()}")
+    return parameters
 
 
-def convert_taxonomy(treedir, savedir="models/ref_db"):
+def read_tree(tax_dir):
     """
-    Read model files stored in treedir, convert and save them to a npz
+    Read tree from taxonomy.npz
     """
-
-    treedir = Path(treedir)
-    savedir = Path(savedir)
-
-    seg, unk, layer, prior, paths, parents = read_taxonomy(treedir.joinpath("taxonomy.priors"))
-    refs, ok_pos = read_refs(treedir.joinpath("refs.aln"))
-
-    ref_rows, ref_cols = assign_refs(treedir.joinpath("model.rseqs.numeric"))   # Is this used anywhere?
-    
-    # save state of each node [empty but known, has_refs]
-    N = seg.shape[0]
-    R = refs.shape[0]
-
-    unk = np.expand_dims(unk, axis=1)
-
-    no_refs = np.ones((N,1), dtype=bool)
-    no_refs[ref_rows] = 0
-
-    node_state = no_refs*np.logical_not(unk)
-    node_state = np.concatenate((node_state, np.logical_not(no_refs)), axis=1)
-
-    tax_file = savedir.joinpath("taxonomy.npz")
-    i = 1
-    while tax_file.exists():
-        tax_file = savedir.joinpath(f"taxonomy_{i}.npz")
-        i += 1
-
-    print("taxonomy converted, saving...")
-
-    # saving model
-    np.savez_compressed(tax_file.resolve(),
-                        segments=seg,
-                        unk=unk,
-                        node_layer=layer,
-                        priors=prior,
-                        paths=paths,
-                        refs=refs,
-                        ok_pos=ok_pos,
-                        ref_rows=ref_rows,
-                        ref_cols=ref_cols,
-                        node_state=node_state,
-                        parents=parents
-                        )
-    print(f"saved taxonomy at {tax_file.resolve()}")
-
-
-def read_baseline(model_dir=r"/h/royga/Documents/PROTAX-dsets/30k_small"):
-    loaded = np.load(model_dir + r'/model.npz')
-    refs = jnp.array(loaded['refs'])
-    seg = loaded['segments']
-    paths = loaded['paths']
-    ok_pos = jnp.array(loaded['ok_pos'])
-
-    N = seg.shape[0]
-    nids, seqs = (loaded['ref_rows'], loaded['ref_cols'])
-    n2s = csr_matrix((np.ones(seqs.shape), (nids, seqs)), shape=(N, refs.shape[0])).tocsc()
-    
-    return refs, ok_pos, n2s, paths
-
-
-def read_model_jax(par_dir, tax_dir):
-    """
-    Read model npz representation
-    """
-    par_dir = Path(par_dir)
     tax_dir = Path(tax_dir)
-
     tax = np.load(tax_dir.resolve(), allow_pickle=True)
-    par = np.load(par_dir.resolve())
-    refs = jnp.array(tax['refs'])
     
+    refs = jnp.array(tax['refs'])
     ok_pos = jnp.array(tax['ok_pos'])
-    prior = jnp.array(tax['prior'])
 
-    seg = jnp.array(tax['segments'])
+    prior = jnp.array(tax['prior'])
     paths = jnp.array(tax['paths'])
     node_state = jnp.array(tax['node_state'])
-
+    seg = jnp.array(tax['segments'])
+    segnum = int(jnp.max(seg) + 1)
+    
     N = seg.shape[0]
-    # nids, seqs = (tax['ref_rows'], tax['ref_cols'])
     indices = tax['n2s_indices']
     indptr = tax['n2s_indptr']
     data = np.ones(len(indices))
-
-    # TODO dumb way of converting to JAX BCSR
-    # n2s = csr_matrix((np.ones(seqs.shape), (nids, seqs)), shape=(N, refs.shape[0]))
     node2seq = sparse.CSR((data, indices, indptr), shape=(N, refs.shape[0]))
 
-
-    segnum = int(jnp.max(seg) + 1)
-
-    # dataclass to contain taxonomy and sequences
     tree = TaxTree(
         refs=refs,
         ok_pos=ok_pos,
@@ -319,64 +259,23 @@ def read_model_jax(par_dir, tax_dir):
         max_seq_length=tax['max_seq_length']
     )
 
-    # model parameters
-    beta = par['beta']
-    scalings = par['scalings']
-
-    if beta.shape[0] == 7:
-        print("Padding beta to (8, 4)...")
-        zero_row = np.zeros((1, 4)) # Use zeros, not ones
-        beta = np.vstack([zero_row, beta])
-        
-    if scalings.shape[0] == 7:
-        print("Padding scalings to (8, 4)...")
-        padding_row = np.array([[0, 1, 0, 1]])
-        scalings = np.vstack([padding_row, scalings])
-
-
-    # layer = tax['node_layer']
-    layer = tax['ranks']
-    beta, scalings = assign_params(beta, scalings, layer)
-
-    if scalings.shape[1] > 4:
-        sc_mean = jnp.array(scalings[:, [0, 2, 4, 6]])
-        sc_var = jnp.array(scalings[:, [1, 3, 5, 7]])
-
-    else:
-        sc_mean = jnp.array(scalings[:, [0, 2]])
-        sc_var = jnp.array(scalings[:, [1, 3]])
-    
-    beta = jnp.array(beta)
-
-    params = ProtaxModel(
-        beta=beta,
-        sc_mean=sc_mean,
-        sc_var=sc_var
-    )
-
-    return tree, params, N, segnum
+    return tree, N, segnum
 
     
-def get_train_targets(seq2tax_dir, layers, R):
-    """
-    Save target NIDs for each reference sequence contained in R. Save as CSV
-    """
-    f = open(seq2tax_dir)
+def get_targets(target_dir):
 
-    # 8 x N result array
-    res = np.zeros((7, R), dtype=int) - 1
+    targ = pd.read_csv(target_dir).to_numpy()
+    res = np.zeros((targ.shape[0],), dtype=np.int32)
 
-    # assigning ref seq indices
-    for n, l in enumerate(f.readlines()):
-        nid, num_refs, ref_idx = l.split('\t')
-        nid = int(nid)
+    for i in range(targ.shape[0]):
+        for j in range(targ.shape[1]):
+            node_id = targ[i][j]
+            if node_id != -1:
+                res[i] = node_id
+            else:
+                break
 
-        curr_layer = layers[nid]-1
-        ref_idx = np.array(ref_idx.split(' ')).astype(int)
-        res[curr_layer][ref_idx] = nid
-    
-    df = pd.DataFrame(res)
-    df.to_csv("30k-targets.csv")
+    return jnp.array(res)
 
 
 def read_query(q, padding_len=None):
@@ -404,33 +303,6 @@ def str2batch_query(q):
     return jnp.array(queries), jnp.array(ok_pos)
 
 
-# def mask_n2s(n2s, node_state, i):
-#     """
-#     Remove a sequence from node2seq
-#     """
-#     ref_mask = np.ones((n2s.shape[1],), dtype=np.int32)     # mask for reference sequences
-#     ref_mask[i] = 0                                         # remove the sequence from the mask
-#     n2s = n2s @ sp.diags(ref_mask)                          # this changes the memory structure of the matrix (order of elements inside indptr and indices)
-#                                                             # make sure code does not depend on indices to stay sorted.
-
-#     has_refs = np.array(n2s.sum(axis=1)) > 0
-#     empty = np.logical_not(has_refs)
-
-#     # update empty but known entries
-#     node_state = np.logical_or(node_state, empty)
-
-#     node_state = np.concatenate((node_state, has_refs), axis=1)
-
-#     n2s = CSRWrapper(
-#         data=jnp.array(n2s.data),
-#         indices=jnp.array(n2s.indices),
-#         indptr=jnp.array(n2s.indptr),
-#         shape=n2s.shape,
-#     )
-
-#     return n2s, jnp.array(node_state)
-
-
 def mask_n2s(n2s, node_state, i):
 
     is_target = (n2s.indices == i)
@@ -453,6 +325,7 @@ def mask_n2s(n2s, node_state, i):
     return new_n2s, new_node_state
 
 
+# -------------------------------------- Scalings --------------------------------------
 
 def get_X_raw(dists, tree, N):
     """
@@ -463,7 +336,6 @@ def get_X_raw(dists, tree, N):
     new_dat = jnp.take(dists, node2seq.indices)
     return knn(node2seq.indptr, node2seq.indices, new_dat, N)
     # return knn_v2(node2seq.indptr, node2seq.indices, new_dat, N)
-
 
 def compute_scalings_from_raw_features_streaming(raw_features_iter, node_layer, has_refs, eps=1e-8):
     """

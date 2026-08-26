@@ -1,0 +1,35 @@
+Steps to run PROTAX-GPU.V2
+
+1. Set-up:
+    - create a virtual environment
+    - You need cuda/12.9 cudnn/9.13.1.26 installed first
+    - pip install requirements.txt
+    - pip install . (creates protax package inside the environment)
+    - Go inside the protax package in the virtual environment, grab the cpu_ops and gpu_ops files from env.venv/lib/protax/ops/, copy them into the main project folder inside /protax/ops/
+
+2. Precomputations for train:
+    - Copy your data .csv file into datasets/your_data_name/
+    - Data must be in csv format with columns ["phylum", "class", "order", "family", "genus", "species", "dna_barcode"]
+    - Write the correct paths inside bioscan_convert.py main function
+    - Once files are created, rename "_labels.csv" to "train_labels.csv" and "refs.aln" to "train.aln"
+    - Move all files inside your_data_name/fasta (you may delete taxonomy_temp.npz)
+
+3. Train PROTAX-GPU.V2:
+    - Go to train.sh
+    - Modify training configurations if desired, and write your model id
+    - Copy and execute all content of the file inside your terminal
+    - Run training with command: python -m scripts.train --data_dir "$data_dir" --scalings_dir "$scalings_dir" --tc "$TC_JSON" --exp "$exp_details" --id "${id}"
+    - Model will output performance on the training set after training
+    - Results are saved in the main project directory
+    - Trained model is saved inside /models
+
+4. Classify using a trained model:
+    - Create test labels and test.aln using the same functions in bioscan_convert.py. Make sure to direct the functions to the original created taxonomy (do NOT use convert_to_taxonomy nor assign_sequences_to_taxonomy to create a new one)
+    - Move your files into your_data_name/fasta
+    - Go to classify.sh
+    - Write your model id, then copy and execute all content of the file inside your terminal
+    - Run classification with commands:
+        test_mode="test"    (change to train to apply self-match exclusion if classifying the training set)
+        python -m scripts.process_seqs "$data_dir" "$test_mode" models/model_${id}.npz "$TC_JSON" "$exp_details" "${id}"
+
+    - Results are saved in the main project directory

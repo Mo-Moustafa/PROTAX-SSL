@@ -37,6 +37,8 @@ class ProtaxModel(NamedTuple):
     Holds the parameters for PROTAX model
     """
     
-    beta: jax.Array                  # [N, 4]   Beta parameters for the PROTAX model.
-    sc_mean: jax.Array              # [N, 2]   Mean scaling factors for the PROTAX model.
-    sc_var: jax.Array               # [N, 2]   Variance scaling factors for the PROTAX model.
+    beta: jax.Array                  # [N, 4]   Beta parameters for the PROTAX model expanded to every node.
+    beta_conc: jax.Array            # [8, 4]   Beta parameters for the PROTAX model without expansion.
+    sc_conc: jax.Array              # [N, 4]   Scaling factors for the PROTAX model without expansion.
+    sc_mean: jax.Array              # [N, 2]   Mean scaling factors for the PROTAX model expanded to every node.
+    sc_var: jax.Array               # [N, 2]   Variance scaling factors for the PROTAX model expanded to every node.

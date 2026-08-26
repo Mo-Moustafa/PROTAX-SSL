@@ -60,24 +60,6 @@ def load_dataset(split):
     return df, hierarchy
 
 ### ------------------------------------------------ Creating Taxonomy ------------------------------------------------
-# def assign_priors(df, hierarchy):
-
-#     total_rows = len(df)
-#     taxon_to_prior_map = {}
-
-#     for rank in hierarchy:
-#         counts = df[rank].value_counts(dropna=False)
-#         priors = counts / total_rows
-        
-#         taxon_to_prior_map[rank] = priors.to_dict()
-
-#     unknown_prior_per_rank = {}
-#     for rank in hierarchy:
-#         unknown_prior = taxon_to_prior_map[rank].get(np.nan, 0)
-#         unknown_prior_per_rank[rank] = unknown_prior
-
-#     return taxon_to_prior_map, unknown_prior_per_rank
-
 
 def unk_node_count_per_child_rank(prior_df, hierarchy):
     """
@@ -450,84 +432,48 @@ def get_list_of_targets(sequences_df, hierarchy, data_dir):
     return list_of_targets
 
 
-def save_training_targets(list_of_targets, data_dir):
-
-    targets_df = pd.DataFrame(list_of_targets)
-    targets_df_tr = targets_df.T
-    targets_df_tr.to_csv(f'{data_dir}/train-targets.csv', index=True)
-
-    print("Training targets saved.")
-
-    return
-
-
-def save_test_labels(list_of_targets, data_dir):
+def save_labels(list_of_targets, data_dir):
     targets_df = pd.DataFrame(list_of_targets)
     taxa_levels = ['kingdom_id', 'phylum_id', 'class_id', 'order_id', 'family_id', 'genus_id', 'species_id']
     targets_df.columns = taxa_levels
     targets_df.insert(0, 'root_id', 0)
 
-    targets_df.to_csv(f'{data_dir}/test_labels.csv', index=False)
+    targets_df.to_csv(f'{data_dir}/_labels.csv', index=False)
 
-    print("Test labels saved.")
+    print("labels saved.")
 
     return
 
+### ------------------------------------------------ Creating .aln file ------------------------------------------------
+
+def save_aln(df, hierarchy, data_dir):
+    with open(f"{data_dir}/refs.aln", 'w', encoding='latin-1') as f:
+        for _, row in df.iterrows():
+            taxonomy_str = ",".join([str(row[rank]) for rank in hierarchy if pd.notna(row[rank])])            
+            header = f"{taxonomy_str}\t\n"            
+            sequence = str(row['dna_barcode']).strip()
+            f.write(header)
+            f.write(f"{sequence}\n")
 
 ### ------------------------------------------------ Main Function ------------------------------------------------
 if __name__ == "__main__":
 
-    data_dir = "datasets/mycoai/new_tax"
-    # full_df, hierarchy = load_dataset(split="all")
-    # full_df, hierarchy = mycoai_fasta_to_df(f"{data_dir}/trainset.fasta")  
-    # full_df.to_csv(f"{data_dir}/trainset.csv", index=False)
+    data_dir = "datasets/your_data_name"
     # Rainbows = remove_question_marks(full_df) 
 
     hierarchy = ["phylum", "class", "order", "family", "genus", "species"]
-    full_df = pd.read_csv(f"{data_dir}/trainset_clean.csv")
+    full_df = pd.read_csv(f"{data_dir}/your_file.csv")
+    # This creates a temporary taxonomy structure
     convert_to_taxonomy(full_df, hierarchy, data_dir)    
     
-    train_sequences_df = pd.read_csv(f"{data_dir}/trainset_clean.csv")
-    targets_df = train_sequences_df.copy()
-  
-    assign_sequences_to_taxonomy(train_sequences_df, hierarchy, data_dir)
+    sequences_df = pd.read_csv(f"{data_dir}/your_file.csv")
 
-    list_of_targets = get_list_of_targets(targets_df, hierarchy, data_dir)
-    save_training_targets(list_of_targets, data_dir)
-    save_test_labels(list_of_targets, data_dir)
+    # This populates the taxonomy with sequences and saves the final taxonomy structure
+    assign_sequences_to_taxonomy(sequences_df, hierarchy, data_dir)
 
+    # This creates the labels (whether for train or test)
+    list_of_targets = get_list_of_targets(sequences_df, hierarchy, data_dir)
+    save_labels(list_of_targets, data_dir)
 
-# ------------------------------------------------ Picking Unknown Samples ------------------------------------------------
-# def pick_test_sequence(taxon, grouped_remaining):
-#     try:
-#         # Get all available sequences for this genus that aren't in train
-#         available = grouped_remaining.get_group(taxon)
-#         # Sample 1 (randomly) from what's left
-#         return available.sample(n=1)
-#     except (KeyError, ValueError):
-#         # Handle cases where a genus might not have a second sequence
-#         return None
-
-# def pick_unknown_samples(upper_level_taxa):
-
-#     unknown_from_trainset = pd.read_csv("notebooks/unknown_from_trainset.csv")
-#     train_df = unknown_from_trainset.sample(n=17735, random_state=42)
-#     remaining_df = unknown_from_trainset.drop(train_df.index)
-#     grouped_remaining = remaining_df.groupby(upper_level_taxa)
-
-#     test_list = []
-#     for taxon in train_df[upper_level_taxa]:
-#         sibling = pick_test_sequence(taxon, grouped_remaining)
-#         if sibling is not None:
-#             test_list.append(sibling)
-
-#     test_df = pd.concat(test_list).reset_index(drop=True)
-#     train_df = train_df.reset_index(drop=True)
-
-#     test_df.to_csv("notebooks/unknown_test.csv", index=False)
-#     train_df.to_csv("notebooks/unknown_train.csv", index=False)
-
-
-
-# if __name__ == "__main__":
-#     pick_unknown_samples("order")
+    # This creates the .aln file for the sequences
+    save_aln(sequences_df, hierarchy, data_dir)

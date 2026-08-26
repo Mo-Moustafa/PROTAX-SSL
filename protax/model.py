@@ -63,6 +63,10 @@ def get_X(dists, tree, N, sc_mean, sc_var, dist_scaling=None, pt_min=None, pt_ga
         X_gap = jnp.log(X[:, 1] + 1e-8) 
         X = jnp.stack([X_min, X_gap], axis=1)     
 
+    elif dist_scaling == "log-z":
+        X = jnp.log(X + 1e-8)
+        X = (X - sc_mean) / jnp.sqrt(sc_var)
+
     elif dist_scaling == "none":
         pass
     
@@ -123,14 +127,8 @@ def fill_bprob(X, beta, tree, segnum):
     z = jnp.sum(jnp.multiply(X, beta), axis=1)    
     max_z = jax.ops.segment_max(z, tree.segments, num_segments=segnum)
     max_z = jnp.take(max_z, tree.segments)
-
-    # exp_z = jnp.exp(z - max_z)*tree.prior
     exp_z = jnp.exp(z - max_z)
-
     branch_probs = get_bprobs(exp_z, tree.segments, segnum) # assign prob to each node relative to its siblings (sum of siblings under the parent is 1).
-
-    # filled_paths = jnp.take(branch_probs, tree.paths, fill_value=1)
-    # return filled_paths
     return branch_probs
 
 
@@ -142,10 +140,10 @@ def fill_log_bprob(X, beta, tree, segnum):
     z = jnp.sum(jnp.multiply(X, beta), axis=1)
     max_z = jax.ops.segment_max(z, tree.segments, num_segments=segnum)
     max_z = jnp.take(max_z, tree.segments)
-    z -= max_z
+    z = z - max_z
     branch_probs = get_log_bprobs(z, tree.segments, segnum)
 
-    # total probability computation
+    # puts it in a necessary structure for training
     filled_paths = jnp.take(branch_probs, tree.paths, fill_value=0)
     return filled_paths
 
@@ -183,6 +181,10 @@ def get_X_single(dists, tree, N, sc_mean, sc_var, dist_scaling=None, pt_min=None
 
     elif dist_scaling == "none":
         pass
+
+    elif dist_scaling == "log-z":
+        X = jnp.log(X + 1e-8)
+        X = (X - sc_mean) / jnp.sqrt(sc_var)
     
     else:
         raise ValueError(f"Invalid dist_scaling: {dist_scaling}")

@@ -7,7 +7,6 @@ import jax.numpy as jnp
 import time
 import pandas as pd
 from pathlib import Path
-import random
 import matplotlib.pyplot as plt
 import argparse
 import json
@@ -18,6 +17,14 @@ import sys
 import joblib
 from scripts.calibration import evaluate
 from protax.classify import classify_file
+
+def lr_schedule(step, total_steps, warmup_steps, base_lr):
+    if step < warmup_steps:
+        lr = base_lr * (step / warmup_steps)
+    else:
+        lr = base_lr * (1 - (step - warmup_steps) / (total_steps - warmup_steps))    
+    
+    return lr
 
 def CE_loss(log_probs, y_ind, q_param, tree, train_with_q):
 
@@ -35,65 +42,50 @@ def CE_loss(log_probs, y_ind, q_param, tree, train_with_q):
 
     return -log_p_model
 
-
-def forward(X, tree, beta, segnum, y_ind, lvl, q_param, train_with_q):
-    beta = jnp.take(beta, lvl, axis=0)
-    log_probs = model.fill_log_bprob(X, beta, tree, segnum)
-    return CE_loss(log_probs, y_ind, q_param, tree, train_with_q)
-
-
-def make_vectorized_batch_ops(tree_for_lp, lvl, segnum):
+def make_vectorized_batch_ops(tree_for_lp, lvl, segnum, q_mult):
     """
     vmap grad / forward over batch dimension. X differs per sample; tree_for_lp
     supplies segments/paths/prior for fill_log_bprob / CE_loss.
     """
 
-    def _loss_beta(beta, x, y, q_param, train_with_q):
-        beta_n = jnp.take(beta, lvl, axis=0)
+    def _loss_with_beta_n(beta_n, x, y, q_param, train_with_q):
         log_probs = model.fill_log_bprob(x, beta_n, tree_for_lp, segnum)
         return CE_loss(log_probs, y, q_param, tree_for_lp, train_with_q)
 
-    def _single_beta_grad(beta, x, y, q_param, train_with_q):
-        return jax.grad(_loss_beta, argnums=0)(beta, x, y, q_param, train_with_q)
-
-    @partial(jax.jit, static_argnums=(4,))
-    def batched_beta_grad(beta, X_batch, y_batch, q_param, train_with_q):
-        return jax.vmap(_single_beta_grad, in_axes=(None, 0, 0, None, None))(
-            beta, X_batch, y_batch, q_param, train_with_q
-        )
-
-    def _loss_q(q_param, x, y, beta, train_with_q):
+    def _batch_losses_no_q(beta, X_batch, y_batch, q_param):
         beta_n = jnp.take(beta, lvl, axis=0)
-        log_probs = model.fill_log_bprob(x, beta_n, tree_for_lp, segnum)
-        return CE_loss(log_probs, y, q_param, tree_for_lp, train_with_q)
-
-    def _single_q_grad(q_param, x, y, beta, train_with_q):
-        return jax.grad(_loss_q, argnums=0)(q_param, x, y, beta, train_with_q)
-
-    @partial(jax.jit, static_argnums=(4,))
-    def batched_q_grad(beta, X_batch, y_batch, q_param, train_with_q):
-        return jax.vmap(_single_q_grad, in_axes=(None, 0, 0, None, None))(
-            q_param, X_batch, y_batch, beta, train_with_q
-        )
-
-    @partial(jax.jit, static_argnums=(4,))
-    def batched_forward(beta, X_batch, y_batch, q_param, train_with_q):
-        def one(x, y):
-            return forward(x, tree_for_lp, beta, segnum, y, lvl, q_param, train_with_q)
-
+        one = lambda x, y: _loss_with_beta_n(beta_n, x, y, q_param, False)
         return jax.vmap(one)(X_batch, y_batch)
 
-    return batched_beta_grad, batched_q_grad, batched_forward
+    def _batch_losses_with_q(beta, X_batch, y_batch, q_param):
+        beta_n = jnp.take(beta, lvl, axis=0)
+        one = lambda x, y: _loss_with_beta_n(beta_n, x, y, q_param, True)
+        return jax.vmap(one)(X_batch, y_batch)
 
-def lr_schedule(step, total_steps, warmup_steps, base_lr):
-    if step < warmup_steps:
-        lr = base_lr * (step / warmup_steps)
-        train_with_q = False
-        return lr, train_with_q
-    else:
-        lr = base_lr * (1 - (step - warmup_steps) / (total_steps - warmup_steps))
-        train_with_q = True
-        return lr, train_with_q
+    @jax.jit
+    def train_step_no_q(beta, q_param, X_batch, y_batch, lr, l2):
+        def mean_loss_beta_only(beta_local):
+            return jnp.mean(_batch_losses_no_q(beta_local, X_batch, y_batch, q_param))
+
+        mean_loss, beta_grad = jax.value_and_grad(mean_loss_beta_only)(beta)
+        beta_new = beta - lr * (beta_grad + l2 * beta)
+        batch_loss_sum = mean_loss * jnp.asarray(X_batch.shape[0], dtype=mean_loss.dtype)
+        return beta_new, q_param, batch_loss_sum, beta_grad
+
+    @jax.jit
+    def train_step_with_q(beta, q_param, X_batch, y_batch, lr, l2):
+        def mean_loss_beta_q(beta_local, q_local):
+            return jnp.mean(_batch_losses_with_q(beta_local, X_batch, y_batch, q_local))
+
+        mean_loss, (beta_grad, q_grad) = jax.value_and_grad(mean_loss_beta_q, argnums=(0, 1))(beta, q_param)
+        q_step = jnp.clip(q_grad, -10.0, 10.0)
+        q_param_new = q_param - (lr * q_mult * q_step)
+        beta_new = beta - lr * (beta_grad + l2 * beta)
+        batch_loss_sum = mean_loss * jnp.asarray(X_batch.shape[0], dtype=mean_loss.dtype)
+        return beta_new, q_param_new, batch_loss_sum, beta_grad
+
+    return train_step_no_q, train_step_with_q
+
 
 def create_design_matrices(variant, base_dir, train_dir, tree, train_config, N, params):
     n2s = tree.node2seq
@@ -126,12 +118,12 @@ def create_design_matrices(variant, base_dir, train_dir, tree, train_config, N, 
         else:
             bert_base = jnp.array(base_embeddings["bert"])
             mamba_base = jnp.array(base_embeddings["mamba"])
-            assert bert_base.shape == mamba_base.shape
+            # assert bert_base.shape == mamba_base.shape
             base_length = int(bert_base.shape[0])
 
             bert_train = jnp.array(train_embeddings["bert"])
             mamba_train = jnp.array(train_embeddings["mamba"])
-            assert bert_train.shape == mamba_train.shape
+            # assert bert_train.shape == mamba_train.shape
             R = int(bert_train.shape[0])
 
     elif variant == "og":
@@ -144,7 +136,7 @@ def create_design_matrices(variant, base_dir, train_dir, tree, train_config, N, 
         raise ValueError(f"Model {variant} not supported")
 
     X_all = None    
-    for i in tqdm(range(R), desc="Computing design matrices", file=sys.stderr, dynamic_ncols=True, mininterval=5):
+    for i in tqdm(range(R), desc="Computing design matrices", file=sys.stderr, dynamic_ncols=True, mininterval=1000):
         # mask the tree for the current sample
         if i < base_length:
             new_node2seq, new_node_state = protax_utils.mask_n2s(n2s, node_state, i)
@@ -176,63 +168,25 @@ def create_design_matrices(variant, base_dir, train_dir, tree, train_config, N, 
 
     return X_all, R
 
-def get_targ(target_dir):
-    """
-    Get node id for each reference sequence at lowest level
-    NOTE: Node ids are 1-indexed, not 0-indexed (assumes first column to be an index)
-    """
-    targ = pd.read_csv(target_dir)
-    targ = targ.to_numpy()[:, 1:].T
-
-    res = np.zeros((targ.shape[0],), dtype=np.int32)
-
-    for i in range(len(targ)):
-        old = -1
-        for j in range(targ.shape[1]):
-            if targ[i][j] == -1:
-                res[i] = old
-            elif j == targ.shape[1] - 1:
-                res[i] = targ[i][j]
-            old = targ[i][j]
-
-    return jnp.array(res)
-
-
-def load_params(pdir, tdir):
-    par_dir = Path(pdir)
-    tax_dir = Path(tdir)
-
-    tax = np.load(tax_dir.resolve())
-    par = np.load(par_dir.resolve())
-
-    beta = par["beta"]
-    sc = par["scalings"]
-    # lvl = tax["node_layer"]
-    lvl = tax["ranks"]
-
-    if beta.shape[0] == 7:
-        print("Padding beta to (8, 4)...")
-        zero_row = np.zeros((1, 4)) # Use zeros, not ones
-        beta = np.vstack([zero_row, beta])
-        
-    # 2. Fix scalings: Pad with [0, 1, 0, 1] if shape is (7, 4)
-    if sc.shape[0] == 7:
-        print("Padding scalings to (8, 4)...")
-        padding_row = np.array([[0, 1, 0, 1]])
-        sc = np.vstack([padding_row, sc])
-
-    beta = jnp.array(beta)
-    sc = jnp.array(sc)
-
-    return beta, lvl, sc
-
 
 def train(variant, tax_dir, base_dir, train_dir, targ_dir, scalings_dir, train_config, run_id, continue_training, q_perc=0.5, decay_lr=False):
 
+    start_time = time.time()
+    
+    q_mult = 0.1                                # Change if heavier mislabeling regularization is desired
+    base_lr = train_config["learning_rate"]
+    l2 = float(train_config["l2"])
+    B = int(train_config["batch_size"])
+
+    tree, N, segnum = protax_utils.read_tree(tax_dir)
+    tree_for_lp = tree
+    lvl = jnp.asarray(tree.ranks, dtype=jnp.int32)
+    targ_jnp = protax_utils.get_targets(targ_dir)
+    train_step_no_q, train_step_with_q = make_vectorized_batch_ops(tree_for_lp, lvl, segnum, q_mult)
+
     if not continue_training:
         print("Training from scratch")
-        tree, params, N, segnum = protax_utils.read_model_jax(scalings_dir, tax_dir)
-
+        params = protax_utils.read_model(scalings_dir, tree.ranks)
         key_beta = jax.random.PRNGKey(0)
         sigma_beta = 5.0
         if variant in ("bert", "mamba", "og"):
@@ -240,123 +194,68 @@ def train(variant, tax_dir, base_dir, train_dir, targ_dir, scalings_dir, train_c
         elif variant == "hybrid_lin":
             beta = jax.random.normal(key_beta, (8, 6)) * sigma_beta
 
-        q_param = jnp.asarray(-3.5, dtype=jnp.float32)
-        _, lvl, sc = load_params(scalings_dir, tax_dir)
+        q_param = jnp.asarray(0.0, dtype=jnp.float32)
 
     else:
         print("Continuing training")
-        tree, params, N, segnum = protax_utils.read_model_jax(f"models/model_{run_id}.npz", tax_dir)
-        beta, lvl, sc = load_params(f"models/model_{run_id}.npz", tax_dir)
+        params = protax_utils.read_model(f"models/model_{run_id}.npz", tree.ranks)
+        beta = params.beta_conc
         initial_value = jnp.log(q_perc / (1 - q_perc))
         q_param = jnp.array(initial_value)
 
-    q_mult = 0.1
-
-    tree_for_lp = tree
-    lvl = jnp.asarray(lvl, dtype=jnp.int32)
-    targ = get_targ(targ_dir)
-    targ_np = np.asarray(jax.device_get(targ), dtype=np.int32)
-    batched_beta_grad, batched_q_grad, batched_forward = make_vectorized_batch_ops(tree_for_lp, lvl, segnum)
-
+    print("Creating design matrices...")
     X_all, R = create_design_matrices(variant, base_dir, train_dir, tree, train_config, N, params)
-
-    base_lr = train_config["learning_rate"]
-    l2 = float(train_config["l2"])
+    
     train_with_q = False
     if decay_lr:
-        warmup_ratio = 0.05
-        steps_per_epoch = math.ceil(R / train_config["batch_size"])
+        warmup_ratio = 0.1
+        steps_per_epoch = math.ceil(R / B)
         total_steps = steps_per_epoch * train_config["num_epochs"]
         warmup_steps = int(total_steps * warmup_ratio)
         step = 0
-        lr, train_with_q = lr_schedule(step, total_steps, warmup_steps, base_lr)
+        lr = lr_schedule(step, total_steps, warmup_steps, base_lr)
     else:
         lr = base_lr
 
-    print("Training model...")
-    start_time = time.time()
-    
-    # lr_list = [lr, 0.5*lr, 2*lr]
-    # run_id_og = run_id
-    # for i in range (3):
-    #     print("\n\n--------------------------------")
-    #     print(f"Training model with lr: {lr_list[i]}")
-    #     beta = jax.random.normal(key_beta, (8, 4)) * sigma_beta
-    #     q_param = jnp.asarray(0.0, dtype=jnp.float32)
-
-    #     train_with_q = False
-    #     lr = lr_list[i]
-    #     run_id = f"{run_id_og}_run_{i}"
-
+    print("Training started...")
     epoch_loss_hist = []
 
-    for e in range(1, train_config["num_epochs"] + 1):
-            
-        # if e == 6:
-            # classify_file(variant, data_dir / "test_embeddings.npz", base_dir, Path(f"models/model_{run_id}.npz"), tax_dir, tc["dist_scaling"], run_id, train_eval=False, X_all=None)
-            # evaluate(f"results_{run_id}.csv", data_dir / "test_labels.csv", "", exp_details, "species", tax_dir, run_id)
-            # train_with_q = True
-            
-        #     lr = lr * 0.01
-        #     print("\n--------------------------------")
-        #     print("Decreasing lr to: ", lr)
+    for e in tqdm(range(1, train_config["num_epochs"] + 1), desc=f"training model", file=sys.stderr, dynamic_ncols=True):
 
-        # elif e == 11:
-        #     classify_file(variant, data_dir / "test_embeddings.npz", base_dir, Path(f"models/model_{run_id}.npz"), tax_dir, tc["dist_scaling"], run_id, train_eval=False, X_all=None)
-        #     evaluate(f"results_{run_id}.csv", data_dir / "test_labels.csv", "", exp_details, "species", tax_dir, run_id)
-
-        #     lr = lr * 0.05
-        #     print("\n--------------------------------")
-        #     print("Decreasing lr to: ", lr)
-        #     # train_with_q = True
-
-        # elif e == 31:
-        #     lr = lr * 0.1
-        #     print("\n--------------------------------")
-        #     print("Decreasing lr to: ", lr)
-
-
-        print(f"epoch {e} / {train_config['num_epochs']}")
-
+        print(f"epoch {e} / {train_config['num_epochs']}", flush=True)
         loss_sum = jnp.asarray(0.0, dtype=jnp.float32)
+        beta_grad = None
 
-        traversal = list(range(R))
-        random.shuffle(traversal)
-
-        B = int(train_config["batch_size"])
-        for start in tqdm(range(0, len(traversal), B), desc=f"epoch {e} batches", file=sys.stderr, dynamic_ncols=True, mininterval=5):
+        traversal = np.random.permutation(R)
+        for start in range(0, len(traversal), B):
             
             if decay_lr:
-                lr, train_with_q = lr_schedule(step, total_steps, warmup_steps, base_lr)
+                lr = lr_schedule(step, total_steps, warmup_steps, base_lr)
+                train_with_q = step >= warmup_steps
                 step += 1
 
-            chunk = traversal[start : start + B]
-            idx = np.asarray(chunk, dtype=np.int32)
+            idx = np.asarray(traversal[start : start + B], dtype=np.int32)
             X_batch = jnp.asarray(X_all[idx], dtype=jnp.float32)
-            y_batch = jnp.asarray(targ_np[idx], dtype=jnp.int32)
-
-            loss_sum += jnp.sum(batched_forward(beta, X_batch, y_batch, q_param, train_with_q))
-
-            G_beta = batched_beta_grad(beta, X_batch, y_batch, q_param, train_with_q)
-            
+            y_batch = jnp.take(targ_jnp, jnp.asarray(idx, dtype=jnp.int32), axis=0)
             if train_with_q:
-                G_q = batched_q_grad(beta, X_batch, y_batch, q_param, train_with_q)
-                q_step = jnp.clip(jnp.mean(G_q), -10.0, 10.0)
-                q_param = q_param - (lr * q_mult * q_step)
-
-            # L2 weight decay on beta (set train_config["l2"] > 0 to enable)
-            beta = beta - lr * (jnp.mean(G_beta, axis=0) + l2 * beta)
+                beta, q_param, batch_loss_sum, beta_grad = train_step_with_q(beta, q_param, X_batch, y_batch, lr, l2)
+            else:
+                beta, q_param, batch_loss_sum, beta_grad = train_step_no_q(beta, q_param, X_batch, y_batch, lr, l2)
+            loss_sum += batch_loss_sum
 
         if train_with_q:
-            print("q_percentage: ", jax.nn.sigmoid(q_param).item())
+            print("q_percentage: ", jax.nn.sigmoid(q_param).item(), flush=True)
 
         epoch_loss = loss_sum / float(R)
         epoch_loss_hist.append(float(epoch_loss))
-        print("total loss: ", float(epoch_loss))
+        print("total loss: ", float(epoch_loss), flush=True)
+        # print("beta:\n", np.array(beta), flush=True)
+        # print("beta_grad:\n", np.array(beta_grad), flush=True)
         
         # save checkpoint
         mf = Path(f"models/model_{run_id}.npz")
-        np.savez_compressed(mf.resolve(), beta=np.array(beta), scalings=sc)        
+        np.savez_compressed(mf.resolve(), beta=np.array(beta), scalings=params.sc_conc)
+
 
     plt.plot(epoch_loss_hist)
     plt.xlabel("Epoch")
@@ -372,9 +271,6 @@ def train(variant, tax_dir, base_dir, train_dir, targ_dir, scalings_dir, train_c
     return X_all
 
 
-def str2bool(s: str) -> bool:
-    return s.lower() == "true"
-
 if __name__ == "__main__":
     # parse config from command line
     parser = argparse.ArgumentParser(description="Train a model")
@@ -383,16 +279,15 @@ if __name__ == "__main__":
     parser.add_argument('--tc', type=str, help='Training Hyperparameters')
     parser.add_argument("--exp", type=str, help="Experiment details")
     parser.add_argument("--id", type=str, help="ID of the run")
-    parser.add_argument("--continue_training", type=str2bool, choices=[True, False], default=False)
     args = parser.parse_args()
 
     tc = json.loads(args.tc)
+    decay_lr = tc["decay_lr"]
     variant = tc["model"]
 
     scalings_dir = Path(args.scalings_dir)
     data_dir = Path(args.data_dir)
     tax_dir = data_dir / "taxonomy.npz"
-    targ_dir = data_dir / "train-targets.csv"
     train_labels = data_dir / "train_labels.csv"
     if variant == "og":
         base_dir = None
@@ -403,10 +298,9 @@ if __name__ == "__main__":
 
     exp_details = args.exp
     run_id = args.id
-    continue_training = args.continue_training
+    continue_training = tc["continue_training"]
 
-    X_all = train(variant, tax_dir, base_dir, train_dir, targ_dir, scalings_dir, tc, run_id, continue_training)
-    
-    classify_file(variant, train_dir, base_dir, Path(f"models/model_{run_id}.npz"), tax_dir, tc["dist_scaling"], run_id, train_eval=True, X_all=X_all)
+    X_all = train(variant, tax_dir, base_dir, train_dir, train_labels, scalings_dir, tc, run_id, continue_training, decay_lr=decay_lr)
+    classify_file(variant, train_dir, base_dir, Path(f"models/model_{run_id}.npz"), tax_dir, tc["dist_scaling"], run_id, train_eval=True, X_all=X_all)    
     for class_level in ["species", "genus", "family"]:
         evaluate(f"results_{run_id}.csv", train_labels, "", exp_details, class_level, tax_dir, run_id)
